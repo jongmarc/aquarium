@@ -1,0 +1,162 @@
+#include <SPI.h>
+#include <SD.h>
+
+#define DEBUG             true
+#define BAUD_RATE_ARDUINO 115200
+#define BAUD_RATE_ESP8226 115200
+
+const String SSID = "Sitecom186990";
+const String PASS = "DHZ4FBQLBJKX";
+const int pinChipSelectSDCard = 53;
+boolean ports[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 };
+String incomingData;
+
+void setup() {
+  
+  Serial.begin( BAUD_RATE_ARDUINO );
+  Serial1.begin( BAUD_RATE_ESP8226 );
+  
+  initializeESP8226();
+  
+  initializeCardReader();
+}
+
+void loop() {
+  while ( Serial1.available() > 0 ) {
+    char received = Serial1.read();
+    incomingData += received;
+
+    if ( received == '\n' ) {
+      if ( incomingData.indexOf( "+IPD," ) > -1 ) {
+        String channel = incomingData.substring( incomingData.indexOf( "+IPD," ) + 5, incomingData.indexOf( ",", incomingData.indexOf( "+IPD," ) + 5 ) );
+        String data = incomingData.substring( incomingData.indexOf( ":" ) + 1);
+        String command = data;
+        String value = data;
+        if ( data.substring( 0, 3 ) == "GET" ) {
+          // handle http request
+          if ( command.indexOf( "?" ) > 0 ) {
+            command = command.substring( command.indexOf( "?" ) + 1 );
+            command = command.substring( 0, command.indexOf( "=" ) );
+          }
+          if ( value.indexOf( "?" ) > 0 ) {
+            value = value.substring( value.indexOf( "=" ) + 1 );
+            value = value.substring( 0, value.indexOf( " " ) );
+          }
+        } else {
+          // handle tcp request
+          command = command.substring( 0, command.indexOf( "=" ) );
+          value = value.substring( value.indexOf( "=" ) + 1, value.length() - 1 );
+        }
+
+        sendSerialData( channel, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 11\r\n\r\nAcknowledge\r\n" );
+        Serial.println( "Command: " + command );
+        Serial.println( "Value: " + value );
+        
+      }
+      incomingData = "";
+    }   
+    
+    if ( incomingData.length() > 256 ) {
+      incomingData = "";
+    }
+  }
+}  
+
+
+ void sendSerialData(String channel, String text) {
+   text = text + "\r\n";
+   String message = "AT+CIPSEND=" + channel + "," + text.length() + "\r\n";
+   
+   sendData( message, 1000, false );   
+   sendData( text, 1000, false );
+}
+
+String sendData(String command, const int timeout, boolean debug)
+{
+    String response = "";
+    
+    Serial1.print( command ); // send the read character to the esp8266
+
+    
+    long int time = millis();
+    
+    while( ( time + timeout ) > millis()) {
+      while( Serial1.available() ) {
+        // The esp has data so display its output to the serial window 
+        char c = Serial1.read(); // read the next character.
+        response += c;
+      }  
+    }
+    
+    if ( debug ) {
+      Serial.print( response );
+    }
+    
+    return response;
+}
+
+
+void initializeESP8226() {  
+  sendData( "AT+RST\r\n", 2000, DEBUG ); // reset module
+  sendData( "AT+CWMODE=3\r\n", 1000, DEBUG ); // configure as access point
+  sendData( "AT+CWJAP=\"" + SSID + "\",\"" + PASS + "\"\r\n", 4000, DEBUG ); // connect to network
+  sendData( "AT+CIFSR\r\n", 1000, DEBUG ); // get ip address
+  sendData( "AT+CIPMUX=1\r\n", 1000, DEBUG ); // configure for multiple connections
+  sendData( "AT+CIPSERVER=1,4043\r\n", 1000, DEBUG ); // turn on server on port 80
+}
+  
+void initializeCardReader() {
+  Serial.println("INFO : Initializing SD card");
+
+  if ( !SD.begin( pinChipSelectSDCard ) ) {
+    Serial.println("ERROR: Card failed, or not present");
+    return;
+  }
+
+  Serial.println( "INFO : Card initialized" );
+}
+
+void writePortMap() {  
+  String dump = "";
+  for ( int portIndex = 0; portIndex < sizeof( ports ); portIndex++ ) {
+      dump += ports[portIndex];
+  }
+  
+  if ( SD.exists( "ports.map" ) ) {
+    SD.remove( "ports.map" );
+  }
+  
+  File myFile = SD.open( "ports.map", FILE_WRITE );
+    myFile.println( dump );
+  myFile.close();
+}
+
+void readPortMap() {
+  String logText = "";
+  if ( SD.exists( "ports.map" ) ) {
+
+    Serial.println("INFO : Portmap found, reading ports.map");
+ 
+    File myFile = SD.open( "ports.map" );
+ 
+    if ( myFile ) {
+      int currentIndex = 0;
+      while ( myFile.available() ) {
+        char receivedChar = myFile.read();
+        if ( receivedChar == '0' || receivedChar == '1' ) {
+          logText += receivedChar;
+          ports[ currentIndex++ ] = receivedChar;
+          if ( currentIndex == sizeof( ports ) ) {
+            return;
+          }
+        }
+      }
+      
+      myFile.close();
+    }
+
+  } else {
+    Serial.println("ERROR: No portmap found, keeping default configuration");
+  }
+  Serial.println("READ" + logText);
+}
