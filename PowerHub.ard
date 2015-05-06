@@ -1,66 +1,135 @@
+/* 
+
+  General information ESP8226
+  ---------------------------
+  - use 3.3 dedicated power supply for the ESP8226
+  - pull the RESET + CH_PID lines high, but not the GPIO lines (with 1K - 10K ohm resistors)
+  - use 115,200bps baud rate
+  - set AT+CWMODE=1 to ensure ESP8226 act as a station (not an AP)
+  - set AT+JAP="ssid_goes_here","password_here"
+  - check AT+CIFSR to see if there is an IP-adress assigned
+  - set AT+CIPMUX=1 to ensure multiple connections
+  - set AT+CIPSERVER=1,4043 to open a port on 4043 for listening
+
+  General port bit shifting
+  -------------------------
+  - switch  port with ports = ports ^  (int)pow(2,<PORT in range 1 - 16> - 1);
+  - enable  port with ports = ports |  (int)pow(2,<PORT in range 1 - 16> - 1); 
+  - disable port with ports = ports & ~(int)pow(2,<PORT in range 1 - 16> - 1);
+*/
+
 #include <SPI.h>
 #include <SD.h>
 
 #define DEBUG             true
 #define BAUD_RATE_ARDUINO 115200
-#define BAUD_RATE_ESP8226 115200
+#define BAUD_RATE_ESP8226 9600
 
 const String SSID = "Sitecom186990";
 const String PASS = "DHZ4FBQLBJKX";
+
 const int pinChipSelectSDCard = 53;
 boolean ports[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 };
-String incomingData;
 
 void setup() {
   
   Serial.begin( BAUD_RATE_ARDUINO );
-  Serial1.begin( BAUD_RATE_ESP8226 );
+//  Serial1.begin( BAUD_RATE_ESP8226 );
   
-  initializeESP8226();
+//  initializeESP8226();
   
   initializeCardReader();
+  log("INFO : Booting up the Aquarium Computer");
+  readPortMap();
+  log( "INFO : Initialization complete, waiting for external commands" );
 }
 
 void loop() {
-  while ( Serial1.available() > 0 ) {
+/*  while ( Serial1.available() > 0 ) {
     char received = Serial1.read();
-    incomingData += received;
+    String incomingData += received;
 
     if ( received == '\n' ) {
-      if ( incomingData.indexOf( "+IPD," ) > -1 ) {
-        String channel = incomingData.substring( incomingData.indexOf( "+IPD," ) + 5, incomingData.indexOf( ",", incomingData.indexOf( "+IPD," ) + 5 ) );
-        String data = incomingData.substring( incomingData.indexOf( ":" ) + 1);
-        String command = data;
-        String value = data;
-        if ( data.substring( 0, 3 ) == "GET" ) {
-          // handle http request
-          if ( command.indexOf( "?" ) > 0 ) {
-            command = command.substring( command.indexOf( "?" ) + 1 );
-            command = command.substring( 0, command.indexOf( "=" ) );
-          }
-          if ( value.indexOf( "?" ) > 0 ) {
-            value = value.substring( value.indexOf( "=" ) + 1 );
-            value = value.substring( 0, value.indexOf( " " ) );
-          }
-        } else {
-          // handle tcp request
-          command = command.substring( 0, command.indexOf( "=" ) );
-          value = value.substring( value.indexOf( "=" ) + 1, value.length() - 1 );
-        }
-
-        sendSerialData( channel, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 11\r\n\r\nAcknowledge\r\n" );
-        Serial.println( "Command: " + command );
-        Serial.println( "Value: " + value );
-        
-      }
-      incomingData = "";
-    }   
+      processInstruction( incomingData );
+      incomingData = ""
+    }
     
     if ( incomingData.length() > 256 ) {
       incomingData = "";
     }
   }
+  */
 }  
+
+void processInstruction( String instruction ) {
+  if ( instruction.indexOf( "+IPD," ) > -1 ) {
+    String channel = instruction.substring( instruction.indexOf( "+IPD," ) + 5, instruction.indexOf( ",", instruction.indexOf( "+IPD," ) + 5 ) );
+    String data = instruction.substring( instruction.indexOf( ":" ) + 1);
+    String command = data;
+    String value = data;
+    if ( data.substring( 0, 3 ) == "GET" ) {
+      // handle http request
+      if ( command.indexOf( "?" ) > 0 ) {
+        command = command.substring( command.indexOf( "?" ) + 1 );
+        command = command.substring( 0, command.indexOf( "=" ) );
+      }
+      if ( value.indexOf( "?" ) > 0 ) {
+        value = value.substring( value.indexOf( "=" ) + 1 );
+        value = value.substring( 0, value.indexOf( " " ) );
+      }
+    } else {
+      // handle tcp request
+      command = command.substring( 0, command.indexOf( "=" ) );
+      value = value.substring( value.indexOf( "=" ) + 1, value.length() - 1 );
+    }
+
+    String response = "";
+    command.toUpperCase();
+    if ( value.toInt() > 0 && value.toInt() <= sizeof( ports ) ) {
+      if ( command == "ENABLE" ) {
+        ports[ value.toInt() - 1 ] = 1;
+        log( "INFO : Turn port " + value + " on" );
+        response = "ON";
+      } else if ( command == "DISABLE" ) {
+        ports[ value.toInt() - 1 ] = 0;
+        log( "INFO : Turn port " + value + " off" );
+        response = "OFF";
+      } else if ( command == "SWITCH" ) {
+        if ( ports[ value.toInt() - 1 ] == 0 ) {
+          ports[ value.toInt() - 1] = 1;
+          log( "INFO : Switch port " + value + " from off to on" );
+          response = "ON";
+        } else { 
+          ports[ value.toInt() - 1 ] = 0; 
+          log( "INFO : Switch port " + value + " from on to off" );
+          response = "OFF";
+        }
+      } else if ( command == "STATUS" ) {
+          if ( ports[ value.toInt() - 1 ] == 0 ) {
+            response = "OFF";
+          } else {
+            response = "ON"; 
+          }
+      } else {
+        response = "ERROR: Unknown command \"" + command + "\" from input \"" + data + "\"";
+        error( response );
+      }
+      writePortMap();
+    } else if ( command == "STATUS" ) {
+        // show overall status
+        for ( int portIndex = 0; portIndex < sizeof( ports ); portIndex++ ) {
+          response += ports[portIndex];
+        }
+    } else {
+      response = "ERROR: Unknown port \"" + value + "\" from input \"" + data + "\"";
+      error( response );
+    }
+
+    sendSerialData( channel, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " + String( response.length() ) + "\r\n\r\n" + response + "\r\n" );        
+  } else {
+    error( "ERROR: Unknown command \"" + command + "\" from input \"" + data + "\"" );
+  }
+}
 
 
  void sendSerialData(String channel, String text) {
@@ -88,75 +157,118 @@ String sendData(String command, const int timeout, boolean debug)
       }  
     }
     
-    if ( debug ) {
-      Serial.print( response );
-    }
+    log( "SEND :" + response );
+
     
     return response;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Send and receive data by wireless connections
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 void initializeESP8226() {  
   sendData( "AT+RST\r\n", 2000, DEBUG ); // reset module
-  sendData( "AT+CWMODE=3\r\n", 1000, DEBUG ); // configure as access point
+  sendData( "AT+CWMODE=1\r\n", 1000, DEBUG ); // configure as a station
   sendData( "AT+CWJAP=\"" + SSID + "\",\"" + PASS + "\"\r\n", 4000, DEBUG ); // connect to network
   sendData( "AT+CIFSR\r\n", 1000, DEBUG ); // get ip address
   sendData( "AT+CIPMUX=1\r\n", 1000, DEBUG ); // configure for multiple connections
   sendData( "AT+CIPSERVER=1,4043\r\n", 1000, DEBUG ); // turn on server on port 80
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Storing and retrieving persistant information
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
   
 void initializeCardReader() {
-  Serial.println("INFO : Initializing SD card");
+  log("INFO : Initializing SD card");
 
   if ( !SD.begin( pinChipSelectSDCard ) ) {
-    Serial.println("ERROR: Card failed, or not present");
-    return;
+    error("ERROR: Card failed, or not present");
+  } else {
+    log( "INFO : Card initialized" );
   }
-
-  Serial.println( "INFO : Card initialized" );
 }
 
-void writePortMap() {  
-  String dump = "";
-  for ( int portIndex = 0; portIndex < sizeof( ports ); portIndex++ ) {
-      dump += ports[portIndex];
-  }
-  
+void writePortMap() {
+  String logText = "";
+    
   if ( SD.exists( "ports.map" ) ) {
     SD.remove( "ports.map" );
+    delay(100);
   }
   
   File myFile = SD.open( "ports.map", FILE_WRITE );
-    myFile.println( dump );
-  myFile.close();
+  if ( myFile ) {
+    log("INFO : Writing ports.map");
+
+    for (int i = 0; i < sizeof(ports); i++) {
+      myFile.print( ports[i] ? "1" : "0" );
+      logText += ports[i] ? "1" : "0";
+    }
+
+    myFile.close();
+    log( "WRITE: " + logText ) ;
+  } else {
+    error( "ERROR: Cannot write file" ) ;
+  }
 }
 
 void readPortMap() {
   String logText = "";
+  
   if ( SD.exists( "ports.map" ) ) {
 
-    Serial.println("INFO : Portmap found, reading ports.map");
- 
-    File myFile = SD.open( "ports.map" );
- 
-    if ( myFile ) {
-      int currentIndex = 0;
-      while ( myFile.available() ) {
-        char receivedChar = myFile.read();
-        if ( receivedChar == '0' || receivedChar == '1' ) {
-          logText += receivedChar;
-          ports[ currentIndex++ ] = receivedChar;
-          if ( currentIndex == sizeof( ports ) ) {
-            return;
-          }
-        }
-      }
-      
-      myFile.close();
-    }
+    log("INFO : Portmap found, reading ports.map");
 
+    int i = 0;
+    File myFile = SD.open( "ports.map", FILE_READ );
+    if ( myFile ) {
+      while ( myFile.available() ) {
+        ports[i] = myFile.read() == '1' ? 1 : 0;
+        logText += ports[i] ? "1" : "0";
+        i++;
+      }
+      myFile.close();
+  
+      log( "READ : " + logText ) ;
+    } else {
+      error("ERROR: Portmap found, but unable to open it");  
+    }
   } else {
-    Serial.println("ERROR: No portmap found, keeping default configuration");
+    error("ERROR: No portmap found, created portmap file with the default configuration");
+    writePortMap();
   }
-  Serial.println("READ" + logText);
+}
+
+void log( String text ) {   
+  File myFile = SD.open( "status.log", FILE_WRITE );
+  if ( myFile ) {
+
+    myFile.println( text );
+    myFile.close();
+
+    Serial.println( "LOG  : " + text ) ;
+  } else {
+    error( "ERROR: Cannot write to log file" ) ;
+  }
+}
+
+void error( String text ) {   
+  File myFile = SD.open( "error.log", FILE_WRITE );
+  if ( myFile ) {
+
+    myFile.println( text );
+    myFile.close();
+
+    Serial.println( "ERROR: " + text ) ;
+  } else {
+    Serial.println( "ERROR: Cannot write to error log file" ) ;
+  }
 }
