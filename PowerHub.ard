@@ -20,31 +20,72 @@
 
 #include <SPI.h>
 #include <SD.h>
+#include <EEPROM.h>
+#include <Wire.h>
+#include "RTClib.h"
 
 #define DEBUG             true
 #define BAUD_RATE_ARDUINO 115200
 #define BAUD_RATE_ESP8226 9600
+#define EEPROM_ADDRESS_PORTMAP 0
 
 const String SSID = "Sitecom186990";
 const String PASS = "DHZ4FBQLBJKX";
+RTC_DS1307 rtc;
 
-const int pinChipSelectSDCard = 53;
-boolean ports[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 };
+const int pinChipSelectSDCard = 4; // mega 53;
+boolean ports[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 }; // default port setting
 
 void setup() {
   
   Serial.begin( BAUD_RATE_ARDUINO );
+  delay(1000);
+
 //  Serial1.begin( BAUD_RATE_ESP8226 );
   
-//  initializeESP8226();
-  
+  Wire.begin();
+  rtc.begin();
+  if (! rtc.isrunning()) {
+    Serial.println("00-00-00 00:00:00 ERROR: RTC is NOT running!");
+  } else {
+    // rtc.adjust(DateTime(2015, 5, 7, 20, 38, 10)); // uncomment to adjust the current date / time
+  }
+
   initializeCardReader();
-  log("INFO : Booting up the Aquarium Computer");
-  readPortMap();
-  log( "INFO : Initialization complete, waiting for external commands" );
+
+  log( "Initialize port map from EEPROM" );
+//  EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports); // use only to reset the port modes
+  EEPROM.get( EEPROM_ADDRESS_PORTMAP, ports);
+
+//  initializeESP8226();  
+  
+  log( "Initialization complete, waiting for external commands" );
 }
 
+
+int second;
 void loop() {
+  DateTime now = rtc.now();
+  if ( now.second() < 30 )
+    enablePort(1);
+  else
+    disablePort(1);
+
+  if ( second != now.second() ) {
+    second = now.second();
+    Serial.print(now.year(), DEC);
+    Serial.print('/');
+    Serial.print(now.month(), DEC);
+    Serial.print('/');
+    Serial.print(now.day(), DEC);
+    Serial.print(' ');
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    Serial.print(now.second(), DEC);
+    Serial.println();
+  }
 /*  while ( Serial1.available() > 0 ) {
     char received = Serial1.read();
     String incomingData += received;
@@ -60,7 +101,7 @@ void loop() {
   }
   */
 }  
-
+/*
 void processInstruction( String instruction ) {
   if ( instruction.indexOf( "+IPD," ) > -1 ) {
     String channel = instruction.substring( instruction.indexOf( "+IPD," ) + 5, instruction.indexOf( ",", instruction.indexOf( "+IPD," ) + 5 ) );
@@ -87,31 +128,27 @@ void processInstruction( String instruction ) {
     command.toUpperCase();
     if ( value.toInt() > 0 && value.toInt() <= sizeof( ports ) ) {
       if ( command == "ENABLE" ) {
-        ports[ value.toInt() - 1 ] = 1;
-        log( "INFO : Turn port " + value + " on" );
+        enable( value.toInt() );
         response = "ON";
       } else if ( command == "DISABLE" ) {
-        ports[ value.toInt() - 1 ] = 0;
-        log( "INFO : Turn port " + value + " off" );
+        disable( value.toInt() );
         response = "OFF";
       } else if ( command == "SWITCH" ) {
-        if ( ports[ value.toInt() - 1 ] == 0 ) {
-          ports[ value.toInt() - 1] = 1;
-          log( "INFO : Switch port " + value + " from off to on" );
+        if ( getPortStatus( value.toInt() ) == 0 ) {
+          enablePort( value.toInt() );
           response = "ON";
         } else { 
-          ports[ value.toInt() - 1 ] = 0; 
-          log( "INFO : Switch port " + value + " from on to off" );
+          disablePort( value.toInt() );
           response = "OFF";
         }
       } else if ( command == "STATUS" ) {
-          if ( ports[ value.toInt() - 1 ] == 0 ) {
+          if ( getPortStatus( value.toInt() ) == 0 ) {
             response = "OFF";
           } else {
             response = "ON"; 
           }
       } else {
-        response = "ERROR: Unknown command \"" + command + "\" from input \"" + data + "\"";
+        response = "Unknown command \"" + command + "\" from input \"" + data + "\"";
         error( response );
       }
       writePortMap();
@@ -121,13 +158,13 @@ void processInstruction( String instruction ) {
           response += ports[portIndex];
         }
     } else {
-      response = "ERROR: Unknown port \"" + value + "\" from input \"" + data + "\"";
+      response = "Unknown port \"" + value + "\" from input \"" + data + "\"";
       error( response );
     }
 
     sendSerialData( channel, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " + String( response.length() ) + "\r\n\r\n" + response + "\r\n" );        
   } else {
-    error( "ERROR: Unknown command \"" + command + "\" from input \"" + data + "\"" );
+    error( "Unknown command \"" + command + "\" from input \"" + data + "\"" );
   }
 }
 
@@ -178,6 +215,33 @@ void initializeESP8226() {
   sendData( "AT+CIPMUX=1\r\n", 1000, DEBUG ); // configure for multiple connections
   sendData( "AT+CIPSERVER=1,4043\r\n", 1000, DEBUG ); // turn on server on port 80
 }
+*/
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Port handling
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void enablePort( int portNumber ) {
+  if ( ports[portNumber - 1] != 1 ) {
+    ports[portNumber - 1] = 1;
+    EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports );
+    log( "Port " + String( portNumber ) + " turned on" );
+  }
+}
+
+void disablePort( int portNumber ) {
+  if ( ports[portNumber - 1] != 0 ) {
+    ports[portNumber - 1] = 0;
+    EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports );
+    log( "Port " + String( portNumber ) + " turned off" );
+  }
+}
+
+boolean getPortStatus( int portNumber ) {
+  return ports[ portNumber - 1 ];
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
@@ -185,65 +249,15 @@ void initializeESP8226() {
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  
 void initializeCardReader() {
-  log("INFO : Initializing SD card");
+  Serial.println( getTimestamp() + " INFO : Initializing SD card" );
 
   if ( !SD.begin( pinChipSelectSDCard ) ) {
-    error("ERROR: Card failed, or not present");
+    Serial.println("ERROR: Card failed, or not present");
   } else {
-    log( "INFO : Card initialized" );
-  }
-}
+    DateTime now = rtc.now();
 
-void writePortMap() {
-  String logText = "";
-    
-  if ( SD.exists( "ports.map" ) ) {
-    SD.remove( "ports.map" );
-    delay(100);
-  }
-  
-  File myFile = SD.open( "ports.map", FILE_WRITE );
-  if ( myFile ) {
-    log("INFO : Writing ports.map");
-
-    for (int i = 0; i < sizeof(ports); i++) {
-      myFile.print( ports[i] ? "1" : "0" );
-      logText += ports[i] ? "1" : "0";
-    }
-
-    myFile.close();
-    log( "WRITE: " + logText ) ;
-  } else {
-    error( "ERROR: Cannot write file" ) ;
-  }
-}
-
-void readPortMap() {
-  String logText = "";
-  
-  if ( SD.exists( "ports.map" ) ) {
-
-    log("INFO : Portmap found, reading ports.map");
-
-    int i = 0;
-    File myFile = SD.open( "ports.map", FILE_READ );
-    if ( myFile ) {
-      while ( myFile.available() ) {
-        ports[i] = myFile.read() == '1' ? 1 : 0;
-        logText += ports[i] ? "1" : "0";
-        i++;
-      }
-      myFile.close();
-  
-      log( "READ : " + logText ) ;
-    } else {
-      error("ERROR: Portmap found, but unable to open it");  
-    }
-  } else {
-    error("ERROR: No portmap found, created portmap file with the default configuration");
-    writePortMap();
+    log( "SD Card initialized" );
   }
 }
 
@@ -251,24 +265,45 @@ void log( String text ) {
   File myFile = SD.open( "status.log", FILE_WRITE );
   if ( myFile ) {
 
-    myFile.println( text );
+    myFile.println( getTimestamp() + " " + text );
     myFile.close();
 
-    Serial.println( "LOG  : " + text ) ;
+    Serial.println( getTimestamp() + " INFO : " + text ) ;
   } else {
-    error( "ERROR: Cannot write to log file" ) ;
+    error( "Cannot write to log file" ) ;
   }
 }
 
-void error( String text ) {   
+void error( String text ) {
+
   File myFile = SD.open( "error.log", FILE_WRITE );
   if ( myFile ) {
 
-    myFile.println( text );
+    myFile.println(  getTimestamp() + " " + text );
     myFile.close();
 
-    Serial.println( "ERROR: " + text ) ;
+    Serial.println( getTimestamp() + " ERROR: " + text ) ;
   } else {
-    Serial.println( "ERROR: Cannot write to error log file" ) ;
+    Serial.println( getTimestamp() + " ERROR: Cannot write to error log file" ) ;
   }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Lower level system functions
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+String getTimestamp() {
+  DateTime now = rtc.now();
+  return formatTime( now.day() ) + "-" + formatTime( now.month() ) + "-" + formatTime( now.year() ) + " " + formatTime( now.hour() ) + ":" + formatTime( now.minute() ) + ":" + formatTime( now.second() );
+}
+
+String formatTime( int timeElement ) {
+  if ( timeElement > 9 ) {
+    return (String)timeElement; 
+  } else {
+    return "0" + (String)timeElement;
+  }
+}
+
