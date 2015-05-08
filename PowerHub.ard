@@ -24,24 +24,24 @@
 #include <Wire.h>
 #include "RTClib.h"
 
-#define DEBUG             true
-#define BAUD_RATE_ARDUINO 115200
-#define BAUD_RATE_ESP8226 9600
-#define EEPROM_ADDRESS_PORTMAP 0
+#define DEBUG                   false
+#define BAUD_RATE_ARDUINO       115200
+#define BAUD_RATE_ESP8226       115200
+#define EEPROM_ADDRESS_PORTMAP  0
 
 const String SSID = "Sitecom186990";
 const String PASS = "DHZ4FBQLBJKX";
 RTC_DS1307 rtc;
 
-const int pinChipSelectSDCard = 4; // mega 53;
+
+const int pinChipSelectSDCard = 4;
 boolean ports[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 }; // default port setting
+String incomingData;
 
 void setup() {
-  
   Serial.begin( BAUD_RATE_ARDUINO );
+  Serial1.begin( BAUD_RATE_ESP8226 );
   delay(1000);
-
-//  Serial1.begin( BAUD_RATE_ESP8226 );
   
   Wire.begin();
   rtc.begin();
@@ -57,51 +57,37 @@ void setup() {
 //  EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports); // use only to reset the port modes
   EEPROM.get( EEPROM_ADDRESS_PORTMAP, ports);
 
-//  initializeESP8226();  
+  initializeESP8226();  
+  
+  incomingData = "";
   
   log( "Initialization complete, waiting for external commands" );
 }
 
-
-int second;
 void loop() {
+  
   DateTime now = rtc.now();
   if ( now.second() < 30 )
     enablePort(1);
   else
     disablePort(1);
+  
 
-  if ( second != now.second() ) {
-    second = now.second();
-    Serial.print(now.year(), DEC);
-    Serial.print('/');
-    Serial.print(now.month(), DEC);
-    Serial.print('/');
-    Serial.print(now.day(), DEC);
-    Serial.print(' ');
-    Serial.print(now.hour(), DEC);
-    Serial.print(':');
-    Serial.print(now.minute(), DEC);
-    Serial.print(':');
-    Serial.print(now.second(), DEC);
-    Serial.println();
-  }
-/*  while ( Serial1.available() > 0 ) {
+  while ( Serial1.available() > 0 ) {
     char received = Serial1.read();
-    String incomingData += received;
+    incomingData += received;
 
     if ( received == '\n' ) {
       processInstruction( incomingData );
-      incomingData = ""
+      incomingData = "";
     }
     
     if ( incomingData.length() > 256 ) {
       incomingData = "";
     }
   }
-  */
 }  
-/*
+
 void processInstruction( String instruction ) {
   if ( instruction.indexOf( "+IPD," ) > -1 ) {
     String channel = instruction.substring( instruction.indexOf( "+IPD," ) + 5, instruction.indexOf( ",", instruction.indexOf( "+IPD," ) + 5 ) );
@@ -128,10 +114,10 @@ void processInstruction( String instruction ) {
     command.toUpperCase();
     if ( value.toInt() > 0 && value.toInt() <= sizeof( ports ) ) {
       if ( command == "ENABLE" ) {
-        enable( value.toInt() );
+        enablePort( value.toInt() );
         response = "ON";
       } else if ( command == "DISABLE" ) {
-        disable( value.toInt() );
+        disablePort( value.toInt() );
         response = "OFF";
       } else if ( command == "SWITCH" ) {
         if ( getPortStatus( value.toInt() ) == 0 ) {
@@ -151,7 +137,7 @@ void processInstruction( String instruction ) {
         response = "Unknown command \"" + command + "\" from input \"" + data + "\"";
         error( response );
       }
-      writePortMap();
+      EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports);
     } else if ( command == "STATUS" ) {
         // show overall status
         for ( int portIndex = 0; portIndex < sizeof( ports ); portIndex++ ) {
@@ -163,9 +149,7 @@ void processInstruction( String instruction ) {
     }
 
     sendSerialData( channel, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " + String( response.length() ) + "\r\n\r\n" + response + "\r\n" );        
-  } else {
-    error( "Unknown command \"" + command + "\" from input \"" + data + "\"" );
-  }
+  } 
 }
 
 
@@ -193,9 +177,12 @@ String sendData(String command, const int timeout, boolean debug)
         response += c;
       }  
     }
-    
-    log( "SEND :" + response );
 
+    if ( DEBUG ) {
+      Serial.println(response);
+    }
+    command.trim();
+    log( "Sending to WIFI: " + command );
     
     return response;
 }
@@ -215,7 +202,7 @@ void initializeESP8226() {
   sendData( "AT+CIPMUX=1\r\n", 1000, DEBUG ); // configure for multiple connections
   sendData( "AT+CIPSERVER=1,4043\r\n", 1000, DEBUG ); // turn on server on port 80
 }
-*/
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
@@ -268,21 +255,20 @@ void log( String text ) {
     myFile.println( getTimestamp() + " " + text );
     myFile.close();
 
-    Serial.println( getTimestamp() + " INFO : " + text ) ;
+    Serial.println( getTimestamp() + " INFO : " + text );
   } else {
     error( "Cannot write to log file" ) ;
   }
 }
 
 void error( String text ) {
-
   File myFile = SD.open( "error.log", FILE_WRITE );
   if ( myFile ) {
 
-    myFile.println(  getTimestamp() + " " + text );
+    myFile.println( getTimestamp() + " " + text );
     myFile.close();
 
-    Serial.println( getTimestamp() + " ERROR: " + text ) ;
+    Serial.println( getTimestamp() + " ERROR: " + text );
   } else {
     Serial.println( getTimestamp() + " ERROR: Cannot write to error log file" ) ;
   }
