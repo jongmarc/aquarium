@@ -22,27 +22,42 @@
 #include <SD.h>
 #include <EEPROM.h>
 #include <Wire.h>
-#include "RTClib.h"
+#include <RTClib.h>
+#include <RTCTimedEvent.h>
 
-#define DEBUG                   false
-#define BAUD_RATE_ARDUINO       115200
-#define BAUD_RATE_ESP8226       115200
-#define EEPROM_ADDRESS_PORTMAP  0
+#define DEBUG                       false
+#define BAUD_RATE_ARDUINO           115200
+#define BAUD_RATE_ESP8226           115200
+#define EEPROM_ADDRESS_PORTMAP      0
+#define MAX_NUMBER_OF_TIMED_EVENTS  3
+#define MAX_NUMBER_HARDWARE_PORTS   16
+#define TIMEOUT_BUTTON_PRESS        10 // seconds
+#define TIME_FEEDING_CYCLE          180 // seconds
 
 const String SSID = "Sitecom186990";
 const String PASS = "DHZ4FBQLBJKX";
 RTC_DS1307 rtc;
 
+//initial buffer for NUMBER_OF_EVENTS timers
+RTCTimedEvent.initialCapacity = sizeof(RTCTimerInformation) * MAX_NUMBER_OF_TIMED_EVENTS;
+
 
 const int pinChipSelectSDCard = 4;
-boolean ports[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 }; // default port setting
-String incomingData;
+boolean ports[] = { 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0 }; // default port setting
+String incomingData = "";
+boolean startFeedingMode = false;
+boolean sumpLightOn = false;
+
+// once in a lifetime timers
+long timeToEndFeedingMode = 0;
+
 
 void setup() {
   Serial.begin( BAUD_RATE_ARDUINO );
   Serial1.begin( BAUD_RATE_ESP8226 );
   delay(1000);
   
+  // setting of the RTC
   Wire.begin();
   rtc.begin();
   if (! rtc.isrunning()) {
@@ -57,22 +72,143 @@ void setup() {
 //  EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports); // use only to reset the port modes
   EEPROM.get( EEPROM_ADDRESS_PORTMAP, ports);
 
-  initializeESP8226();  
-  
-  incomingData = "";
-  
+  //initializeESP8226();  
+
+  // setting of all timers
+  RTCTimedEvent.addTimer(0,         //minute
+                         0,         //hour
+                         TIMER_ANY, //day of week
+                         TIMER_ANY, //day
+                         TIMER_ANY, //month
+                         eventDoSomethingUsefull());
+
+  // set correct state of sumpLightOn
+  if ( pinLeftBackDoor == LOW || pinLeftFrontDoor == LOW ) {
+    sumpLightOn = true;
+    enablePort( portSumpLight );
+  }
+
   log( "Initialization complete, waiting for external commands" );
 }
 
-void loop() {
-  
-  DateTime now = rtc.now();
-  if ( now.second() < 30 )
-    enablePort(1);
-  else
-    disablePort(1);
-  
 
+void loop() {
+  processFeedingMode();
+  processSumpLight();
+  processKeypad();
+  //processESP8226();
+  
+  RTCTimedEvent.loop();
+}
+
+void eventDoSomethingUsefull() {
+  // do something usefull here based on timed event
+}
+
+void processFeedingMode () {
+    // Enable feeding mode
+  if ( startFeedingMode ) {
+    startFeedingMode = false;
+    disablePort( portStreamer1 );
+    disablePort( portStreamer2 );
+    disablePort( portPump );
+    // start timer to turn the things on again
+    timeToEndFeedingMode = rtc.secondstime() + TIME_FEEDING_CYCLE;
+  } 
+  
+  // Automatic end feeding mode
+  if ( timeToEndFeedingMode != 0 && rtc.secondstime() > timeToEndFeedingMode ) { 
+    timeToEndFeedingMode = 0;
+    enablePort( portStreamer1 );
+    enablePort( portStreamer2 );
+    enablePort( portPump );    
+  }
+}
+
+void processSumpLight() {
+  // één van beide deuren open en het licht staat uit, dan mag het licht aan
+  if ( ( pinLeftBackDoor == LOW || pinLeftFrontDoor == LOW ) && sumpLightOn == false ) {
+    sumpLightOn = true;
+    enablePort( portSumpLight );
+  } 
+
+  // beide linker deuren dicht en het licht staat nog aan, dan mag het licht uit
+  if ( pinLeftBackDoor == HIGH && pinLeftFrondDoor == HIGH && sumpLightOn == true ) {
+    sumpLightOn = false;
+    disablePort( portSumpLight );
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Send commands by keypad 
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void processKeypad() {
+  char key = keypad.getKey();
+
+  if (key != NO_KEY) {
+    if ( key == '#' ) {
+      processKeyCommand( inputKeypad );
+    } else if ( key == '*' ) {
+      inputKeypad == '';
+    } else {
+      if ( lastTimeButtonPressed - rtc.secondstime() < TIMEOUT_BUTTON_PRESS ) {
+        inputKeypad += key;
+      } else {
+        inputKeypad = key;
+      }
+    }
+
+      lastTimeButtonPressed = rtc.secondstime();
+  }
+}
+
+void processKeyCommand ( String input ) {
+  if ( input.length() == 2 ) {
+    // todo: display status port on display
+  } else if ( input.length() == 3 ) {
+    port = input.substring(0, 2).toInt();
+    action = input.substring(2, 1).toInt();
+    if ( port > 0 && port <= MAX_NUMBER_HARDWARE_PORTS ) {
+      if ( action == 1 ) {
+        enablePort( port );
+      } else if ( action == 0 ) {
+        disablePort( port );
+      } else if ( action == 9 ) {
+        // todo: show status port on display
+      } else {
+        error( "Illegal action: " + action );
+      }
+      // virtuele poorten hierzo
+    } else if ( port == 17 ) { // fish feeding port
+      startFeedingMode = true;
+    } else {
+      error( "Illegal port: " + port ); 
+    }
+  } else {
+    error( "Illegal keypad command: " + input );
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Send and receive data by wireless connections
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void initializeESP8226() {  
+  sendData( "AT+RST\r\n", 2000, DEBUG ); // reset module
+  sendData( "AT+CWMODE=1\r\n", 1000, DEBUG ); // configure as a station
+  sendData( "AT+CWJAP=\"" + SSID + "\",\"" + PASS + "\"\r\n", 4000, DEBUG ); // connect to network
+  sendData( "AT+CIFSR\r\n", 1000, DEBUG ); // get ip address
+  sendData( "AT+CIPMUX=1\r\n", 1000, DEBUG ); // configure for multiple connections
+  sendData( "AT+CIPSERVER=1,4043\r\n", 1000, DEBUG ); // turn on server on port 80
+}
+
+void processSerialData() {
+   // Check and handle serial communication
   while ( Serial1.available() > 0 ) {
     char received = Serial1.read();
     incomingData += received;
@@ -86,7 +222,7 @@ void loop() {
       incomingData = "";
     }
   }
-}  
+}
 
 void processInstruction( String instruction ) {
   if ( instruction.indexOf( "+IPD," ) > -1 ) {
@@ -94,6 +230,7 @@ void processInstruction( String instruction ) {
     String data = instruction.substring( instruction.indexOf( ":" ) + 1);
     String command = data;
     String value = data;
+
     if ( data.substring( 0, 3 ) == "GET" ) {
       // handle http request
       if ( command.indexOf( "?" ) > 0 ) {
@@ -152,7 +289,6 @@ void processInstruction( String instruction ) {
   } 
 }
 
-
  void sendSerialData(String channel, String text) {
    text = text + "\r\n";
    String message = "AT+CIPSEND=" + channel + "," + text.length() + "\r\n";
@@ -161,8 +297,7 @@ void processInstruction( String instruction ) {
    sendData( text, 1000, false );
 }
 
-String sendData(String command, const int timeout, boolean debug)
-{
+String sendData(String command, const int timeout, boolean debug) {
     String response = "";
     
     Serial1.print( command ); // send the read character to the esp8266
@@ -186,23 +321,6 @@ String sendData(String command, const int timeout, boolean debug)
     
     return response;
 }
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// 
-// Send and receive data by wireless connections
-//
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-void initializeESP8226() {  
-  sendData( "AT+RST\r\n", 2000, DEBUG ); // reset module
-  sendData( "AT+CWMODE=1\r\n", 1000, DEBUG ); // configure as a station
-  sendData( "AT+CWJAP=\"" + SSID + "\",\"" + PASS + "\"\r\n", 4000, DEBUG ); // connect to network
-  sendData( "AT+CIFSR\r\n", 1000, DEBUG ); // get ip address
-  sendData( "AT+CIPMUX=1\r\n", 1000, DEBUG ); // configure for multiple connections
-  sendData( "AT+CIPSERVER=1,4043\r\n", 1000, DEBUG ); // turn on server on port 80
-}
-
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
