@@ -331,6 +331,7 @@ String sendData(String command, const int timeout, boolean debug) {
 void enablePort( int portNumber ) {
   if ( ports[portNumber - 1] != 1 ) {
     ports[portNumber - 1] = 1;
+    shiftPorts();
     EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports );
     log( "Port " + String( portNumber ) + " turned on" );
   }
@@ -339,6 +340,7 @@ void enablePort( int portNumber ) {
 void disablePort( int portNumber ) {
   if ( ports[portNumber - 1] != 0 ) {
     ports[portNumber - 1] = 0;
+    shiftPorts();
     EEPROM.put( EEPROM_ADDRESS_PORTMAP, ports );
     log( "Port " + String( portNumber ) + " turned off" );
   }
@@ -411,3 +413,9 @@ String formatTime( int timeElement ) {
   }
 }
 
+void shiftPorts() {
+    digitalWrite(latchPin, 0);
+    shiftOut(dataPin, clockPin, 1 * ports[00] + 2 * ports[01] + 4 * ports[02] + 8 * ports[03] + 16 * ports[04] + 32 * ports[05] + 64 * ports[06] + 128 * ports[07] );
+    shiftOut(dataPin, clockPin, 1 * ports[08] + 2 * ports[09] + 4 * ports[10] + 8 * ports[11] + 16 * ports[12] + 32 * ports[13] + 64 * ports[14] + 128 * ports[15] );
+    digitalWrite(latchPin, 1);
+}
